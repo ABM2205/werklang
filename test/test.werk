@@ -1,0 +1,5 @@
+foo = "hello world"
+bar = "from pkl"
+
+print(foo)
+print(bar)
