@@ -1,0 +1,26 @@
+{
+  "name": "tree-sitter-werklang",
+  "version": "0.1.0",
+  "description": "Tree-sitter grammar for Werklang",
+  "license": "MIT",
+  "main": "bindings/node",
+  "keywords": [
+    "tree-sitter",
+    "parser",
+    "werklang",
+    "werk"
+  ],
+  "files": [
+    "grammar.js",
+    "tree-sitter.json",
+    "src/**",
+    "queries/**"
+  ],
+  "scripts": {
+    "generate": "tree-sitter generate",
+    "test": "tree-sitter test"
+  },
+  "devDependencies": {
+    "tree-sitter-cli": "^0.26.0"
+  }
+}

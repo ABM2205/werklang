@@ -1,0 +1,482 @@
+================================================================================
+Basic script (test.werk)
+================================================================================
+
+foo = "hello world"
+bar = "from pkl"
+
+print(foo)
+print(bar)
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (field_decl
+    name: (identifier)
+    value: (string_literal
+      (string_content)))
+  (field_decl
+    name: (identifier)
+    value: (string_literal
+      (string_content)))
+  (expression_stmt
+    (call_expr
+      function: (identifier)
+      arguments: (argument_list
+        (identifier))))
+  (expression_stmt
+    (call_expr
+      function: (identifier)
+      arguments: (argument_list
+        (identifier)))))
+
+================================================================================
+Shebang, comments, amends, and imports
+================================================================================
+
+#!/usr/bin/env werk
+// Module configuration
+amends "service.werk"
+
+import "./deploy/service.werk" as Service
+import "mage:github.com/acme/buildtools/docker" as docker
+import "go:path/filepath"
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (shebang)
+  (comment)
+  (amends_clause
+    uri: (string_literal
+      (string_content)))
+  (import_decl
+    uri: (string_literal
+      (string_content))
+    alias: (identifier))
+  (import_decl
+    uri: (string_literal
+      (string_content))
+    alias: (identifier))
+  (import_decl
+    uri: (string_literal
+      (string_content))))
+
+================================================================================
+Field declarations and type annotations
+================================================================================
+
+api_token string
+port int = 8080
+ratio float = 0.75
+debug bool = false
+tags []string = ["cli", "go"]
+empty_list []int = []
+svc Service
+custom pkg.Config
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (field_decl
+    name: (identifier)
+    type: (type_annotation
+      (primitive_type)))
+  (field_decl
+    name: (identifier)
+    type: (type_annotation
+      (primitive_type))
+    value: (int_literal))
+  (field_decl
+    name: (identifier)
+    type: (type_annotation
+      (primitive_type))
+    value: (float_literal))
+  (field_decl
+    name: (identifier)
+    type: (type_annotation
+      (primitive_type))
+    value: (bool_literal))
+  (field_decl
+    name: (identifier)
+    type: (type_annotation
+      (slice_type
+        (type_annotation
+          (primitive_type))))
+    value: (slice_literal
+      (string_literal
+        (string_content))
+      (string_literal
+        (string_content))))
+  (field_decl
+    name: (identifier)
+    type: (type_annotation
+      (slice_type
+        (type_annotation
+          (primitive_type))))
+    value: (slice_literal))
+  (field_decl
+    name: (identifier)
+    type: (type_annotation
+      (identifier)))
+  (field_decl
+    name: (identifier)
+    type: (type_annotation
+      (qualified_type
+        package: (identifier)
+        name: (identifier)))))
+
+================================================================================
+Inline config block
+================================================================================
+
+config build {
+    goos string   = env("GOOS", "linux")
+    goarch string = env("GOARCH", "amd64")
+    bin string    = "bin/werk"
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (config_decl
+    name: (identifier)
+    body: (block
+      (field_decl
+        name: (identifier)
+        type: (type_annotation
+          (primitive_type))
+        value: (call_expr
+          function: (identifier)
+          arguments: (argument_list
+            (string_literal
+              (string_content))
+            (string_literal
+              (string_content)))))
+      (field_decl
+        name: (identifier)
+        type: (type_annotation
+          (primitive_type))
+        value: (call_expr
+          function: (identifier)
+          arguments: (argument_list
+            (string_literal
+              (string_content))
+            (string_literal
+              (string_content)))))
+      (field_decl
+        name: (identifier)
+        type: (type_annotation
+          (primitive_type))
+        value: (string_literal
+          (string_content))))))
+
+================================================================================
+Target declarations
+================================================================================
+
+target test {
+    desc = "Run unit tests"
+    parallel_deps = ["fmt", "lint"]
+    sh("go test -v ./...")
+}
+
+target build {
+    deps = ["test"]
+    inputs = glob("internal/**/*.go") + ["main.go"]
+    outputs = [app.out]
+    exec("go", ["build", "-o", app.out, "."])
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (target_decl
+    name: (identifier)
+    body: (block
+      (field_decl
+        name: (identifier)
+        value: (string_literal
+          (string_content)))
+      (field_decl
+        name: (identifier)
+        value: (slice_literal
+          (string_literal
+            (string_content))
+          (string_literal
+            (string_content))))
+      (expression_stmt
+        (call_expr
+          function: (identifier)
+          arguments: (argument_list
+            (string_literal
+              (string_content)))))))
+  (target_decl
+    name: (identifier)
+    body: (block
+      (field_decl
+        name: (identifier)
+        value: (slice_literal
+          (string_literal
+            (string_content))))
+      (field_decl
+        name: (identifier)
+        value: (binary_expr
+          left: (call_expr
+            function: (identifier)
+            arguments: (argument_list
+              (string_literal
+                (string_content))))
+          right: (slice_literal
+            (string_literal
+              (string_content)))))
+      (field_decl
+        name: (identifier)
+        value: (slice_literal
+          (selector_expr
+            operand: (identifier)
+            field: (identifier))))
+      (expression_stmt
+        (call_expr
+          function: (identifier)
+          arguments: (argument_list
+            (string_literal
+              (string_content))
+            (slice_literal
+              (string_literal
+                (string_content))
+              (string_literal
+                (string_content))
+              (selector_expr
+                operand: (identifier)
+                field: (identifier))
+              (string_literal
+                (string_content)))))))))
+
+================================================================================
+Struct instantiation and amending
+================================================================================
+
+api = Service {
+    name = "gateway"
+    ports = [80, 443]
+}
+
+canary = api {
+    replicas = 1
+    debug = true
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (field_decl
+    name: (identifier)
+    value: (struct_amend_expr
+      type: (identifier)
+      (field_decl
+        name: (identifier)
+        value: (string_literal
+          (string_content)))
+      (field_decl
+        name: (identifier)
+        value: (slice_literal
+          (int_literal)
+          (int_literal)))))
+  (field_decl
+    name: (identifier)
+    value: (struct_amend_expr
+      type: (identifier)
+      (field_decl
+        name: (identifier)
+        value: (int_literal))
+      (field_decl
+        name: (identifier)
+        value: (bool_literal)))))
+
+================================================================================
+Conditional expression (if ... then ... else ...)
+================================================================================
+
+ldflags = if release then "-s -w" else ""
+env_cfg = if prod then Service { replicas = 4 } else Service { replicas = 1 }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (field_decl
+    name: (identifier)
+    value: (if_expr
+      condition: (identifier)
+      consequence: (string_literal
+        (string_content))
+      alternative: (string_literal)))
+  (field_decl
+    name: (identifier)
+    value: (if_expr
+      condition: (identifier)
+      consequence: (struct_amend_expr
+        type: (identifier)
+        (field_decl
+          name: (identifier)
+          value: (int_literal)))
+      alternative: (struct_amend_expr
+        type: (identifier)
+        (field_decl
+          name: (identifier)
+          value: (int_literal))))))
+
+================================================================================
+Imperative if / else if / else and for ... in statements
+================================================================================
+
+if !exists("bin") {
+    mkdir("bin")
+} else if verbose && count > 0 {
+    print(items[0])
+} else {
+    print("ready")
+}
+
+for pkg in ["lexer", "parser", "transpiler"] {
+    sh("go test ./internal/\(pkg)/...")
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (if_stmt
+    condition: (unary_expr
+      operand: (call_expr
+        function: (identifier)
+        arguments: (argument_list
+          (string_literal
+            (string_content)))))
+    consequence: (block
+      (expression_stmt
+        (call_expr
+          function: (identifier)
+          arguments: (argument_list
+            (string_literal
+              (string_content))))))
+    alternative: (if_stmt
+      condition: (binary_expr
+        left: (identifier)
+        right: (binary_expr
+          left: (identifier)
+          right: (int_literal)))
+      consequence: (block
+        (expression_stmt
+          (call_expr
+            function: (identifier)
+            arguments: (argument_list
+              (index_expr
+                operand: (identifier)
+                index: (int_literal))))))
+      alternative: (block
+        (expression_stmt
+          (call_expr
+            function: (identifier)
+            arguments: (argument_list
+              (string_literal
+                (string_content))))))))
+  (for_stmt
+    variable: (identifier)
+    iterable: (slice_literal
+      (string_literal
+        (string_content))
+      (string_literal
+        (string_content))
+      (string_literal
+        (string_content)))
+    body: (block
+      (expression_stmt
+        (call_expr
+          function: (identifier)
+          arguments: (argument_list
+            (string_literal
+              (string_content)
+              (interpolation
+                (identifier))
+              (string_content))))))))
+
+================================================================================
+String interpolation, escapes, and multiline strings
+================================================================================
+
+full_tag string = "\(image):\(if debug then "dev" else "latest")\n"
+script = """
+#!/bin/sh
+echo "hello"
+"""
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (field_decl
+    name: (identifier)
+    type: (type_annotation
+      (primitive_type))
+    value: (string_literal
+      (interpolation
+        (identifier))
+      (string_content)
+      (interpolation
+        (if_expr
+          condition: (identifier)
+          consequence: (string_literal
+            (string_content))
+          alternative: (string_literal
+            (string_content))))
+      (escape_sequence)))
+  (field_decl
+    name: (identifier)
+    value: (multiline_string_literal)))
+
+================================================================================
+Operators, selectors, calls, and parenthesized expressions
+================================================================================
+
+calc = (1 + 2) * 3 - 4 / 2 % 2
+cmp = calc >= 5 && -calc < 0 || !flag
+res = docker.Tag("v1.2.0")
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (field_decl
+    name: (identifier)
+    value: (binary_expr
+      left: (binary_expr
+        left: (parenthesized_expr
+          (binary_expr
+            left: (int_literal)
+            right: (int_literal)))
+        right: (int_literal))
+      right: (binary_expr
+        left: (binary_expr
+          left: (int_literal)
+          right: (int_literal))
+        right: (int_literal))))
+  (field_decl
+    name: (identifier)
+    value: (binary_expr
+      left: (binary_expr
+        left: (binary_expr
+          left: (identifier)
+          right: (int_literal))
+        right: (binary_expr
+          left: (unary_expr
+            operand: (identifier))
+          right: (int_literal)))
+      right: (unary_expr
+        operand: (identifier))))
+  (field_decl
+    name: (identifier)
+    value: (call_expr
+      function: (selector_expr
+        operand: (identifier)
+        field: (identifier))
+      arguments: (argument_list
+        (string_literal
+          (string_content))))))

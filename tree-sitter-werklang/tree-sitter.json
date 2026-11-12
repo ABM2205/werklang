@@ -1,0 +1,42 @@
+{
+  "$schema": "https://tree-sitter.github.io/tree-sitter/assets/schemas/config.schema.json",
+  "grammars": [
+    {
+      "name": "werklang",
+      "camelcase": "Werklang",
+      "title": "Werklang",
+      "scope": "source.werk",
+      "file-types": [
+        "werk",
+        "Werkfile"
+      ],
+      "first-line-regex": "^#!.*\\bwerk\\b",
+      "highlights": "queries/highlights.scm",
+      "injections": "queries/injections.scm",
+      "injection-regex": "^(werk|werklang)$",
+      "class-name": "TreeSitterWerklang"
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "license": "MIT",
+    "description": "Tree-sitter grammar for Werklang",
+    "authors": [
+      {
+        "name": "ABM2205"
+      }
+    ],
+    "links": {
+      "repository": "https://github.com/ABM2205/werklang"
+    }
+  },
+  "bindings": {
+    "c": true,
+    "go": false,
+    "node": true,
+    "python": false,
+    "rust": true,
+    "swift": false,
+    "zig": false
+  }
+}

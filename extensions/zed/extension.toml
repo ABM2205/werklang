@@ -1,0 +1,16 @@
+id = "werklang"
+name = "Werklang"
+version = "0.1.0"
+schema_version = 1
+authors = ["ABM2205"]
+description = "Werklang language support for Zed (.werk, Werkfile)"
+repository = "https://github.com/ABM2205/werklang"
+
+[grammars.werklang]
+repository = "https://github.com/ABM2205/werklang"
+rev = "main"
+path = "tree-sitter-werklang"
+
+[language_servers.werklang-lsp]
+name = "Werklang LSP"
+languages = ["Werklang"]

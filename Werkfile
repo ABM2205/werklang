@@ -1,0 +1,134 @@
+import "go:os"
+import "go:path/filepath"
+import "go:strings"
+
+release bool = false
+changelog_version string = ""
+agent_bin string = env("WERK_AGENT_BIN", "")
+
+config app {
+    name string = "werk"
+    bin string = filepath.Join("bin", name)
+    ldflags string = if release then "-s -w" else ""
+}
+
+target build {
+    desc = "Build the werk CLI binary into bin/werk"
+    parallel_deps = ["test", "grammar"]
+    inputs = glob("internal/**/*.go") + ["main.go", "go.mod"]
+    outputs = [app.bin]
+
+    if !exists("bin") {
+        mkdir("bin")
+    }
+    if app.ldflags != "" {
+        exec("go", ["build", "-ldflags", app.ldflags, "-o", app.bin, "."])
+    } else {
+        exec("go", ["build", "-o", app.bin, "."])
+    }
+    print("Built \(app.bin)")
+}
+
+target test {
+    desc = "Run Go compiler, interop, and LSP tests"
+    sh("go test ./...")
+}
+
+target grammar {
+    desc = "Generate and test the Tree-sitter grammar"
+    sh("cd tree-sitter-werklang && tree-sitter generate && tree-sitter test")
+}
+
+target zed {
+    desc = "Typecheck the Zed Rust WASM extension"
+    sh("cd extensions/zed && cargo check")
+}
+
+target check {
+    desc = "Run Go, Tree-sitter, and Zed checks in parallel"
+    parallel_deps = ["test", "grammar", "zed"]
+}
+
+target install {
+    desc = "Install werk into ~/.local/bin (or GOBIN)"
+    gobin = env("GOBIN", "")
+    install_dir = if gobin != "" then gobin else filepath.Join(os.UserHomeDir(), ".local", "bin")
+    mkdir(install_dir)
+    out = filepath.Join(install_dir, app.name)
+    exec("go", ["build", "-o", out, "."])
+    print("Installed \(out)")
+}
+
+target changelog {
+    desc = "Spawn an AI agent to update CHANGELOG.md (Keep a Changelog 1.1.0)"
+    // Resolve agent CLI binary (defaults to Antigravity `agy`)
+
+    local_agy = filepath.Join(os.UserHomeDir(), ".local", "bin", "agy")
+    resolved_agent = agent_bin
+    if resolved_agent == "" {
+        if try_sh("command -v agy >/dev/null 2>&1") == 0 {
+            resolved_agent = capture("command -v agy")
+        } else if exists(local_agy) {
+            resolved_agent = local_agy
+        } else {
+            fail("agent CLI 'agy' not found; install agy or pass -D agent_bin=<cli>")
+        }
+    }
+
+    today = capture("date +%Y-%m-%d")
+    raw_remote = if try_sh("git remote get-url origin >/dev/null 2>&1") == 0 then capture("git remote get-url origin") else ""
+    trimmed_remote = strings.TrimSuffix(strings.TrimSpace(raw_remote), ".git")
+    repo_url = if strings.HasPrefix(trimmed_remote, "git@github.com:") then "https://github.com/\(strings.TrimPrefix(trimmed_remote, "git@github.com:"))" else trimmed_remote
+
+    has_tag = try_sh("git describe --tags --abbrev=0 >/dev/null 2>&1") == 0
+    latest_tag = if has_tag then capture("git describe --tags --abbrev=0") else "(none)"
+    commits = if has_tag then capture("git log \(latest_tag)..HEAD --pretty=format:'- %h (%cs) %s'") else capture("git log -n 50 --pretty=format:'- %h (%cs) %s'")
+    worktree_status = capture("git status --short")
+
+    ver = strings.TrimPrefix(strings.TrimSpace(changelog_version), "v")
+    release_rule = if ver != "" then "Cut release '## [\(ver)] - \(today)' right below an empty '## [Unreleased]' section, moving unreleased entries into '[\(ver)]' and updating bottom comparison links." else "Place all unreleased commits and working-tree changes under '## [Unreleased]', preserving all existing released version sections verbatim."
+
+    prompt = """
+Create or update CHANGELOG.md in the repository root strictly following Keep a Changelog v1.1.0 (https://keepachangelog.com/en/1.1.0/).
+
+Requirements:
+1. Header: Start with '# Changelog', state that all notable changes to this project will be documented in this file, and link Keep a Changelog (https://keepachangelog.com/en/1.1.0/) and Semantic Versioning (https://semver.org/spec/v2.0.0.html).
+2. Human-focused entries: Write clear, concise, user-facing bullet points grouping related work—do not dump raw git commit messages.
+3. Structure & Sections:
+   - Keep '## [Unreleased]' at the top.
+   - Order released versions newest-first using ISO 8601 dates ('## [X.Y.Z] - YYYY-MM-DD').
+   - Group entries strictly under standard Keep a Changelog subsections (include only non-empty ones, in this order):
+     ### Added
+     ### Changed
+     ### Deprecated
+     ### Removed
+     ### Fixed
+     ### Security
+4. Release handling: \(release_rule)
+5. Reference links: Maintain Markdown reference-style comparison/tag links at the bottom using repository URL: \(repo_url)
+6. Read existing CHANGELOG.md if present, inspect key project files for accurate feature descriptions if needed, and write CHANGELOG.md directly.
+
+Repository Git Context (as of \(today)):
+- Remote: \(repo_url)
+- Latest tag: \(latest_tag)
+- Commits:
+\(commits)
+
+- Working tree status:
+\(worktree_status)
+"""
+
+    print("Spawning \(filepath.Base(resolved_agent)) to update CHANGELOG.md...")
+    if filepath.Base(resolved_agent) == "agy" {
+        exec(resolved_agent, ["--mode", "accept-edits", "--print", prompt])
+    } else {
+        exec(resolved_agent, ["-p", prompt])
+    }
+}
+
+target clean {
+    desc = "Remove compiled build artifacts"
+    if exists("bin") {
+        rm("bin")
+    }
+}
