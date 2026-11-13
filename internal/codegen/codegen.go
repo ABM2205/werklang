@@ -16,17 +16,17 @@ type Options struct {
 }
 
 type generator struct {
-	cp            *types.CheckedProgram
-	opts          Options
-	b             strings.Builder
-	indent        int
-	tmpCounter    int
+	cp             *types.CheckedProgram
+	opts           Options
+	b              strings.Builder
+	indent         int
+	tmpCounter     int
 	goAliasMap     map[string]string // werklang alias -> generated Go import ident
 	mageAliasMap   map[string]string // werklang alias -> generated Go import ident
 	usedGoIdents   map[string]bool
 	usedMageIdents map[string]bool
-	topVars       map[string]bool
-	selfFieldRecv string // non-empty when emitting expressions inside a struct .recompute() method
+	topVars        map[string]bool
+	selfFieldRecv  string // non-empty when emitting expressions inside a struct .recompute() method
 }
 
 // Generate emits a complete //go:build mage Go source file from a typechecked Program.
@@ -380,14 +380,12 @@ func (g *generator) emitDeclarationsAndTargets() {
 		return
 	}
 
-	// Determine Default target (`target default` if present, otherwise first target)
-	defaultTarget := g.cp.TargetOrder[0]
+	// Emit Default target only when `target default` is explicitly declared
 	if dt, ok := g.cp.Targets["default"]; ok {
-		defaultTarget = dt
 		g.linef(`var Aliases = map[string]interface{}{"default": %s}`, dt.GoFuncName)
+		g.linef("var Default = %s", dt.GoFuncName)
+		g.line("")
 	}
-	g.linef("var Default = %s", defaultTarget.GoFuncName)
-	g.line("")
 
 	for _, ti := range g.cp.TargetOrder {
 		g.emitTargetFunc(ti)

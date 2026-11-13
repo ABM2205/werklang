@@ -12,6 +12,11 @@ config app {
     ldflags string = if release then "-s -w" else ""
 }
 
+target default {
+    desc = "Run the default build target"
+    deps = ["build"]
+}
+
 target build {
     desc = "Build the werk CLI binary into bin/werk"
     parallel_deps = ["test", "grammar"]

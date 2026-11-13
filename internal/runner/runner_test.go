@@ -305,3 +305,68 @@ target build {
 		t.Fatalf("expected rebuild after input.txt mtime update, got:\n%s", run3Out.String())
 	}
 }
+
+func TestDefaultTargetRunsWhenNoTargetProvided(t *testing.T) {
+	dir := t.TempDir()
+
+	// Put `clean` first and `default` last to prove declaration order never triggers `clean`!
+	wfWithDefault := `target clean {
+    print("ran:clean")
+}
+
+target build {
+    print("ran:build")
+}
+
+target default {
+    deps = ["build"]
+    print("ran:default")
+}
+`
+	wfPath := filepath.Join(dir, "Werkfile")
+	if err := os.WriteFile(wfPath, []byte(wfWithDefault), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code, err := runner.Run(runner.RunOptions{
+		File:    wfPath,
+		WorkDir: dir,
+		Stdout:  &stdout,
+		Stderr:  &stderr,
+	})
+	if err != nil || code != 0 {
+		t.Fatalf("default run failed (code=%d, err=%v): %s", code, err, stderr.String())
+	}
+	got := strings.TrimSpace(stdout.String())
+	if got != "ran:build\nran:default" {
+		t.Fatalf("expected ran:build then ran:default, got:\n%s", got)
+	}
+
+	// Without `target default`, invoking with no targets should list targets rather than running `clean`.
+	wfNoDefault := `target clean {
+    desc = "Dangerous clean target"
+    print("ran:clean")
+}
+`
+	if err := os.WriteFile(wfPath, []byte(wfNoDefault), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	code, err = runner.Run(runner.RunOptions{
+		File:    wfPath,
+		WorkDir: dir,
+		Stdout:  &stdout,
+		Stderr:  &stderr,
+	})
+	if err != nil || code != 0 {
+		t.Fatalf("no-default run failed (code=%d, err=%v): %s", code, err, stderr.String())
+	}
+	if strings.Contains(stdout.String(), "ran:clean") {
+		t.Fatalf("expected clean NOT to run when no default target is defined, got:\n%s", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "Targets:") {
+		t.Fatalf("expected target list when no default target is defined, got:\n%s", stdout.String())
+	}
+}
