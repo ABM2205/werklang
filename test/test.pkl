@@ -1,0 +1,8 @@
+amends "werk:/test/test.werk"
+
+greeting = "welcome"
+port = 9000
+
+db {
+  host = "db.staging.internal"
+}

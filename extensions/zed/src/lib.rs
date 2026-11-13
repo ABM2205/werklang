@@ -20,11 +20,20 @@ impl zed::Extension for WerklangExtension {
             .ok()
             .and_then(|settings| settings.binary);
 
+        let mut env = worktree.shell_env();
+
         let command = match binary_settings.as_ref().and_then(|b| b.path.clone()) {
             Some(path) => path,
-            None => worktree.which("werk").ok_or_else(|| {
-                "werk binary not found on PATH; install werklang or configure lsp.werklang-lsp.binary.path".to_string()
-            })?,
+            None => worktree
+                .which("werk")
+                .or_else(|| {
+                    env.iter()
+                        .find(|(k, _)| k == "HOME")
+                        .map(|(_, home)| format!("{home}/.local/bin/werk"))
+                })
+                .ok_or_else(|| {
+                    "werk binary not found on PATH; install werklang or configure lsp.werklang-lsp.binary.path".to_string()
+                })?,
         };
 
         let args = binary_settings
@@ -32,7 +41,6 @@ impl zed::Extension for WerklangExtension {
             .and_then(|b| b.arguments.clone())
             .unwrap_or_else(|| vec!["lsp".to_string()]);
 
-        let mut env = worktree.shell_env();
         if let Some(extra_env) = binary_settings.and_then(|b| b.env) {
             env.extend(extra_env);
         }

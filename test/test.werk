@@ -1,5 +1,22 @@
-foo = "hello world"
-bar = "from pkl"
+#!/usr/bin/env werk
+import "fmt"
 
-print(foo)
-print(bar)
+config app {
+	/// Greeting prefix
+	greeting: String = "hello"
+
+	/// Target port
+	port: UInt16 = 8080
+
+	db {
+		host = "localhost"
+		port = 5432
+	}
+}
+
+func summary() string {
+	return fmt.Sprintf("%s from Go+Pkl on :%d (db %s:%d)",
+		app.Greeting, app.Port, app.Db.Host, app.Db.Port)
+}
+
+fmt.Println(summary())

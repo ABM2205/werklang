@@ -1,372 +1,154 @@
-package runner_test
+package runner
 
 import (
 	"bytes"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
-
-	"github.com/ABM2205/werklang/internal/runner"
 )
 
-func TestRunWerkModulesAndDerivedFields(t *testing.T) {
+func TestStandaloneSingleFileScriptAndAmendsAndCache(t *testing.T) {
+	// Place in a fresh temp dir outside any `go.mod` to exercise Standalone Single-File Mode!
 	dir := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(dir, "cache"))
 
-	serviceWerk := `name string
-image string
-replicas int = 1
-debug bool = false
-full_tag string = "\(image):\(if debug then "dev" else "latest")"
+	scriptSrc := `#!/usr/bin/env werk
+import (
+	"fmt"
+	"os"
+)
+
+config app {
+	greeting: String = "hello"
+	httpPort: UInt16 = 8080
+	db {
+		host = "localhost"
+		port = 5432
+	}
+}
+
+counter := 0
+
+func nextBanner(arg string) string {
+	counter++
+	return fmt.Sprintf("#%d %s %s on :%d (%s:%d)",
+		counter, app.Greeting, arg, app.HttpPort, app.Db.Host, app.Db.Port)
+}
+
+target := "world"
+if len(os.Args) > 1 {
+	target = os.Args[1]
+}
+fmt.Println(nextBanner(target))
+fmt.Println(nextBanner("again"))
 `
-	if err := os.WriteFile(filepath.Join(dir, "service.werk"), []byte(serviceWerk), 0o644); err != nil {
+	scriptPath := filepath.Join(dir, "hello.werk")
+	if err := os.WriteFile(scriptPath, []byte(scriptSrc), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
-	mainWerk := `import "./service.werk" as Service
-
-api = Service {
-    name = "gateway"
-    image = "ghcr.io/acme/gateway"
-}
-
-canary = api {
-    replicas = 2
-    debug = true
-}
-
-print("\(api.name)=\(api.full_tag) (\(api.replicas))")
-print("\(canary.name)=\(canary.full_tag) (\(canary.replicas))")
-`
-	mainPath := filepath.Join(dir, "run.werk")
-	if err := os.WriteFile(mainPath, []byte(mainWerk), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	var stdout, stderr bytes.Buffer
-	code, err := runner.Run(runner.RunOptions{
-		File:    mainPath,
-		WorkDir: dir,
-		Stdout:  &stdout,
-		Stderr:  &stderr,
+	// 1. Run with template defaults
+	var out1, err1 bytes.Buffer
+	code, err := Run(RunOptions{
+		ScriptPath: scriptPath,
+		ScriptArgs: []string{"werk"},
+		Stdout:     &out1,
+		Stderr:     &err1,
 	})
 	if err != nil || code != 0 {
-		t.Fatalf("run failed (code=%d, err=%v)\nstderr:\n%s", code, err, stderr.String())
+		t.Fatalf("Run defaults failed (code=%d, err=%v): %s", code, err, err1.String())
+	}
+	want1 := "#1 hello werk on :8080 (localhost:5432)\n#2 hello again on :8080 (localhost:5432)"
+	if strings.TrimSpace(out1.String()) != want1 {
+		t.Fatalf("got:\n%s\nwant:\n%s", out1.String(), want1)
 	}
 
-	got := strings.TrimSpace(stdout.String())
-	want := "gateway=ghcr.io/acme/gateway:latest (1)\ngateway=ghcr.io/acme/gateway:dev (2)"
-	if got != want {
-		t.Fatalf("unexpected output:\ngot:\n%s\nwant:\n%s", got, want)
-	}
-}
+	// 2. Run with external amending .pkl file (`-c prod.pkl`)
+	prodPkl := `amends "werk:/hello.werk"
 
-func TestMissingRequiredModuleFieldErrorsAtCheckTime(t *testing.T) {
-	dir := t.TempDir()
-	_ = os.WriteFile(filepath.Join(dir, "service.werk"), []byte("name string\nport int = 80\n"), 0o644)
-	badPath := filepath.Join(dir, "bad.werk")
-	_ = os.WriteFile(badPath, []byte("import \"./service.werk\" as Service\ns = Service { port = 8080 }\n"), 0o644)
-
-	_, _, err := runner.Transpile(badPath, dir)
-	if err == nil || !strings.Contains(err.Error(), `missing required field "name"`) {
-		t.Fatalf("expected missing required field error, got: %v", err)
-	}
-}
-
-func TestAmendsWerkModule(t *testing.T) {
-	dir := t.TempDir()
-	_ = os.WriteFile(filepath.Join(dir, "base.werk"), []byte(`env_name string = "dev"
-port int = 8080
-banner string = "\(env_name):\(port)"
-`), 0o644)
-
-	prodPath := filepath.Join(dir, "prod.werk")
-	_ = os.WriteFile(prodPath, []byte(`amends "./base.werk"
-
-env_name = "prod"
-port = 443
-print(banner)
-`), 0o644)
-
-	var stdout, stderr bytes.Buffer
-	code, err := runner.Run(runner.RunOptions{
-		File:    prodPath,
-		WorkDir: dir,
-		Stdout:  &stdout,
-		Stderr:  &stderr,
-	})
-	if err != nil || code != 0 {
-		t.Fatalf("amends run failed (code=%d, err=%v): %s", code, err, stderr.String())
-	}
-	if strings.TrimSpace(stdout.String()) != "prod:443" {
-		t.Fatalf("expected prod:443, got %q", stdout.String())
-	}
-}
-
-func TestImportApplePklAndGoStdlib(t *testing.T) {
-	dir := t.TempDir()
-
-	pklContent := `app_name = "billing"
-port = 8080
-ratio = 1.5
-enabled = true
-tags = new Listing {
-  "v1"
-  "pci"
-}
-timeout = 2.s
+greeting = "welcome"
+httpPort = 443
 db {
-  host = "db.internal"
-  port = 5432
+	host = "prod-db.internal"
 }
 `
-	if err := os.WriteFile(filepath.Join(dir, "app.pkl"), []byte(pklContent), 0o644); err != nil {
+	prodPath := filepath.Join(dir, "prod.pkl")
+	if err := os.WriteFile(prodPath, []byte(prodPkl), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	werkSrc := `import "./app.pkl" as app
-import "go:os"
-import "go:strings"
-import "go:path/filepath"
-
-staging = app {
-    port = 9090
-}
-
-target verify {
-    desc = "Test Pkl + Go stdlib interop"
-    ver_file = filepath.Join("ver.txt")
-    os.WriteFile(ver_file, "  v2.4.0 \n", 420)
-    ver = strings.TrimSpace(os.ReadFile(ver_file))
-    print("\(app.app_name)|\(app.db.host):\(app.port)|staging:\(staging.port)|tags:\(app.tags[0]),\(app.tags[1])|ver:\(ver)")
-}
-`
-	wf := filepath.Join(dir, "Werkfile")
-	if err := os.WriteFile(wf, []byte(werkSrc), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	var stdout, stderr bytes.Buffer
-	code, err := runner.Run(runner.RunOptions{
-		File:    wf,
-		WorkDir: dir,
-		Targets: []string{"verify"},
-		Stdout:  &stdout,
-		Stderr:  &stderr,
+	var out2, err2 bytes.Buffer
+	code, err = Run(RunOptions{
+		ScriptPath:  scriptPath,
+		ConfigFiles: []string{prodPath},
+		ScriptArgs:  []string{"ops"},
+		Stdout:      &out2,
+		Stderr:      &err2,
 	})
 	if err != nil || code != 0 {
-		t.Fatalf("pkl+go run failed (code=%d, err=%v)\nstderr:\n%s", code, err, stderr.String())
+		t.Fatalf("Run with prod.pkl failed (code=%d, err=%v): %s", code, err, err2.String())
+	}
+	want2 := "#1 welcome ops on :443 (prod-db.internal:5432)\n#2 welcome again on :443 (prod-db.internal:5432)"
+	if strings.TrimSpace(out2.String()) != want2 {
+		t.Fatalf("got:\n%s\nwant:\n%s", out2.String(), want2)
 	}
 
-	got := strings.TrimSpace(stdout.String())
-	want := "billing|db.internal:8080|staging:9090|tags:v1,pci|ver:v2.4.0"
-	if got != want {
-		t.Fatalf("unexpected output:\ngot:  %q\nwant: %q", got, want)
+	// 3. Build standalone binary with `-c prod.pkl` and verify zero Pkl dependency at runtime
+	binPath := filepath.Join(dir, "hello-bin")
+	if err := Build(BuildOptions{
+		Target:      scriptPath,
+		OutputPath:  binPath,
+		ConfigFiles: []string{prodPath},
+		Stderr:      &err2,
+	}); err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+
+	cmd := exec.Command(binPath, "binary")
+	cmd.Env = []string{"PATH=/nonexistent"} // Prove zero runtime dependency on `pkl` or `go`!
+	binOut, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("compiled binary failed: %v\n%s", err, string(binOut))
+	}
+	want3 := "#1 welcome binary on :443 (prod-db.internal:5432)\n#2 welcome again on :443 (prod-db.internal:5432)"
+	if strings.TrimSpace(string(binOut)) != want3 {
+		t.Fatalf("binary output got:\n%s\nwant:\n%s", string(binOut), want3)
 	}
 }
 
-func TestMageImportDAGIncrementalAndOverrides(t *testing.T) {
+func TestConventionFallbackPkl(t *testing.T) {
 	dir := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(dir, "cache"))
 
-	// Create a local Go module with a shared Mage target package!
-	gomod := "module example.com/testrepo\n\ngo 1.23\n"
-	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(gomod), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	dockerDir := filepath.Join(dir, "ci", "docker")
-	if err := os.MkdirAll(dockerDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	dockerGo := `package docker
-
-import "fmt"
-
-// Login authenticates with the container registry.
-func Login() error {
-	fmt.Println("mage:docker:login")
-	return nil
+	scriptPath := filepath.Join(dir, "svc.werk")
+	if err := os.WriteFile(scriptPath, []byte(`import "fmt"
+config {
+	port: UInt16
 }
-
-// Tag tags an image with version.
-func Tag(version string) error {
-	fmt.Printf("mage:docker:tag:%s\n", version)
-	return nil
-}
-`
-	if err := os.WriteFile(filepath.Join(dockerDir, "docker.go"), []byte(dockerGo), 0o644); err != nil {
+fmt.Println(config.Port)
+`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := os.WriteFile(filepath.Join(dir, "input.txt"), []byte("v1"), 0o644); err != nil {
+	// Matching `<stem>.pkl` (`svc.pkl`) discovered automatically without `-c`!
+	if err := os.WriteFile(filepath.Join(dir, "svc.pkl"), []byte(`amends "werk:/svc.werk"
+port = 9090
+`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	wfSrc := `import "mage:example.com/testrepo/ci/docker" as docker
-
-release bool = false
-
-config cfg {
-    mode string = if release then "prod" else "dev"
-}
-
-target prep {
-    desc = "Prepare build"
-    print("local:prep")
-}
-
-target build {
-    desc = "Incremental build target"
-    deps = ["prep", "docker:login"]
-    inputs = ["input.txt"]
-    outputs = ["output.txt"]
-
-    print("building:\(cfg.mode)")
-    docker.Tag(cfg.mode)
-    sh("cp input.txt output.txt")
-}
-`
-	wf := filepath.Join(dir, "Werkfile")
-	if err := os.WriteFile(wf, []byte(wfSrc), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	// 1. Verify `List: true` shows both local targets and imported docker targets
-	var listOut, listErr bytes.Buffer
-	code, err := runner.Run(runner.RunOptions{
-		File:    wf,
-		WorkDir: dir,
-		List:    true,
-		Stdout:  &listOut,
-		Stderr:  &listErr,
+	var out, errBuf bytes.Buffer
+	code, err := Run(RunOptions{
+		ScriptPath: scriptPath,
+		Stdout:     &out,
+		Stderr:     &errBuf,
 	})
 	if err != nil || code != 0 {
-		t.Fatalf("list failed (code=%d, err=%v): %s", code, err, listErr.String())
+		t.Fatalf("convention fallback run failed: %v\n%s", err, errBuf.String())
 	}
-	listed := listOut.String()
-	for _, expected := range []string{"build", "prep", "docker:login", "docker:tag"} {
-		if !strings.Contains(strings.ToLower(listed), expected) {
-			t.Fatalf("expected `werk -l` output to contain %q, got:\n%s", expected, listed)
-		}
-	}
-
-	// 2. First run with -D release=true should run prep, docker:login, build, and create output.txt
-	var run1Out, run1Err bytes.Buffer
-	code, err = runner.Run(runner.RunOptions{
-		File:      wf,
-		WorkDir:   dir,
-		Targets:   []string{"build"},
-		Overrides: map[string]string{"release": "true"},
-		Stdout:    &run1Out,
-		Stderr:    &run1Err,
-	})
-	if err != nil || code != 0 {
-		t.Fatalf("run 1 failed (code=%d, err=%v): %s", code, err, run1Err.String())
-	}
-	out1 := strings.TrimSpace(run1Out.String())
-	want1 := "local:prep\nmage:docker:login\nbuilding:prod\nmage:docker:tag:prod"
-	if out1 != want1 {
-		t.Fatalf("run 1 output mismatch:\ngot:\n%s\nwant:\n%s", out1, want1)
-	}
-
-	// 3. Second run without touching input.txt should skip `building:...` because output.txt is up to date!
-	var run2Out, run2Err bytes.Buffer
-	code, err = runner.Run(runner.RunOptions{
-		File:    wf,
-		WorkDir: dir,
-		Targets: []string{"build"},
-		Stdout:  &run2Out,
-		Stderr:  &run2Err,
-	})
-	if err != nil || code != 0 {
-		t.Fatalf("run 2 failed: %v %s", err, run2Err.String())
-	}
-	if strings.Contains(run2Out.String(), "building:") {
-		t.Fatalf("expected incremental target to skip rebuild when output.txt is up to date, got:\n%s", run2Out.String())
-	}
-
-	// 4. Touch input.txt forward in time -> should rebuild!
-	future := time.Now().Add(5 * time.Second)
-	if err := os.Chtimes(filepath.Join(dir, "input.txt"), future, future); err != nil {
-		t.Fatal(err)
-	}
-	var run3Out, run3Err bytes.Buffer
-	code, err = runner.Run(runner.RunOptions{
-		File:    wf,
-		WorkDir: dir,
-		Targets: []string{"build"},
-		Stdout:  &run3Out,
-		Stderr:  &run3Err,
-	})
-	if err != nil || code != 0 {
-		t.Fatalf("run 3 failed: %v %s", err, run3Err.String())
-	}
-	if !strings.Contains(run3Out.String(), "building:dev") {
-		t.Fatalf("expected rebuild after input.txt mtime update, got:\n%s", run3Out.String())
-	}
-}
-
-func TestDefaultTargetRunsWhenNoTargetProvided(t *testing.T) {
-	dir := t.TempDir()
-
-	// Put `clean` first and `default` last to prove declaration order never triggers `clean`!
-	wfWithDefault := `target clean {
-    print("ran:clean")
-}
-
-target build {
-    print("ran:build")
-}
-
-target default {
-    deps = ["build"]
-    print("ran:default")
-}
-`
-	wfPath := filepath.Join(dir, "Werkfile")
-	if err := os.WriteFile(wfPath, []byte(wfWithDefault), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	var stdout, stderr bytes.Buffer
-	code, err := runner.Run(runner.RunOptions{
-		File:    wfPath,
-		WorkDir: dir,
-		Stdout:  &stdout,
-		Stderr:  &stderr,
-	})
-	if err != nil || code != 0 {
-		t.Fatalf("default run failed (code=%d, err=%v): %s", code, err, stderr.String())
-	}
-	got := strings.TrimSpace(stdout.String())
-	if got != "ran:build\nran:default" {
-		t.Fatalf("expected ran:build then ran:default, got:\n%s", got)
-	}
-
-	// Without `target default`, invoking with no targets should list targets rather than running `clean`.
-	wfNoDefault := `target clean {
-    desc = "Dangerous clean target"
-    print("ran:clean")
-}
-`
-	if err := os.WriteFile(wfPath, []byte(wfNoDefault), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	stdout.Reset()
-	stderr.Reset()
-	code, err = runner.Run(runner.RunOptions{
-		File:    wfPath,
-		WorkDir: dir,
-		Stdout:  &stdout,
-		Stderr:  &stderr,
-	})
-	if err != nil || code != 0 {
-		t.Fatalf("no-default run failed (code=%d, err=%v): %s", code, err, stderr.String())
-	}
-	if strings.Contains(stdout.String(), "ran:clean") {
-		t.Fatalf("expected clean NOT to run when no default target is defined, got:\n%s", stdout.String())
-	}
-	if !strings.Contains(stdout.String(), "Targets:") {
-		t.Fatalf("expected target list when no default target is defined, got:\n%s", stdout.String())
+	if strings.TrimSpace(out.String()) != "9090" {
+		t.Fatalf("got %q, want 9090", out.String())
 	}
 }

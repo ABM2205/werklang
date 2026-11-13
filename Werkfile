@@ -1,100 +1,265 @@
-import "go:os"
-import "go:path/filepath"
-import "go:strings"
-
-release bool = false
-changelog_version string = ""
-agent_bin string = env("WERK_AGENT_BIN", "")
+#!/usr/bin/env werk
+import (
+	"bytes"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
+)
 
 config app {
-    name string = "werk"
-    bin string = filepath.Join("bin", name)
-    ldflags string = if release then "-s -w" else ""
+	/// Output binary name
+	name: String = "werk"
+
+	/// Output directory for local builds
+	outDir: String = "bin"
+
+	/// Local binary output path
+	bin: String = "\(outDir)/\(name)"
+
+	/// Strip debug symbols for release builds
+	release: Boolean = false
+
+	/// Linker flags derived from release setting
+	ldflags: String = if (release) "-s -w" else ""
+
+	/// Optional release version for the changelog task
+	changelogVersion: String = ""
+
+	/// Optional agent CLI binary override for the changelog task
+	agentBin: String = ""
+
+	paths {
+		grammarDir = "tree-sitter-werklang"
+		zedDir = "extensions/zed"
+	}
 }
 
-target default {
-    desc = "Run the default build target"
-    deps = ["build"]
+type taskSpec struct {
+	name string
+	desc string
+	fn   func(args []string)
 }
 
-target build {
-    desc = "Build the werk CLI binary into bin/werk"
-    parallel_deps = ["test", "grammar"]
-    inputs = glob("internal/**/*.go") + ["main.go", "go.mod"]
-    outputs = [app.bin]
-
-    if !exists("bin") {
-        mkdir("bin")
-    }
-    if app.ldflags != "" {
-        exec("go", ["build", "-ldflags", app.ldflags, "-o", app.bin, "."])
-    } else {
-        exec("go", ["build", "-o", app.bin, "."])
-    }
-    print("Built \(app.bin)")
+func runCmd(dir string, name string, args ...string) error {
+	cmd := exec.Command(name, args...)
+	cmd.Dir = dir
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
 }
 
-target test {
-    desc = "Run Go compiler, interop, and LSP tests"
-    sh("go test ./...")
+func runBuffered(dir string, name string, args ...string) (string, error) {
+	var buf bytes.Buffer
+	cmd := exec.Command(name, args...)
+	cmd.Dir = dir
+	cmd.Stdout = &buf
+	cmd.Stderr = &buf
+	err := cmd.Run()
+	return buf.String(), err
 }
 
-target grammar {
-    desc = "Generate and test the Tree-sitter grammar"
-    sh("cd tree-sitter-werklang && tree-sitter generate && tree-sitter test")
+func mustRun(dir string, name string, args ...string) {
+	if err := runCmd(dir, name, args...); err != nil {
+		fmt.Fprintf(os.Stderr, "%s %v failed: %v\n", name, args, err)
+		os.Exit(1)
+	}
 }
 
-target zed {
-    desc = "Typecheck the Zed Rust WASM extension"
-    sh("cd extensions/zed && cargo check")
+func capture(name string, args ...string) (string, error) {
+	out, err := exec.Command(name, args...).Output()
+	return strings.TrimSpace(string(out)), err
 }
 
-target check {
-    desc = "Run Go, Tree-sitter, and Zed checks in parallel"
-    parallel_deps = ["test", "grammar", "zed"]
+func runParallel(steps []struct {
+	name string
+	fn   func() (string, error)
+}) {
+	var wg sync.WaitGroup
+	type stepResult struct {
+		name string
+		out  string
+		err  error
+	}
+	results := make([]stepResult, len(steps))
+	for i, step := range steps {
+		wg.Add(1)
+		go func(idx int, name string, fn func() (string, error)) {
+			defer wg.Done()
+			out, err := fn()
+			results[idx] = stepResult{name: name, out: out, err: err}
+		}(i, step.name, step.fn)
+	}
+	wg.Wait()
+
+	failed := false
+	for _, r := range results {
+		if r.err != nil {
+			failed = true
+			fmt.Fprintf(os.Stderr, "=== %s failed ===\n%s\n%v\n", r.name, strings.TrimSpace(r.out), r.err)
+		}
+	}
+	if failed {
+		os.Exit(1)
+	}
 }
 
-target install {
-    desc = "Install werk into ~/.local/bin (or GOBIN)"
-    gobin = env("GOBIN", "")
-    install_dir = if gobin != "" then gobin else filepath.Join(os.UserHomeDir(), ".local", "bin")
-    mkdir(install_dir)
-    out = filepath.Join(install_dir, app.name)
-    exec("go", ["build", "-o", out, "."])
-    print("Installed \(out)")
+func taskBuild(args []string) {
+	fast := false
+	for _, a := range args {
+		if a == "--fast" {
+			fast = true
+		}
+	}
+	if !fast {
+		runParallel([]struct {
+			name string
+			fn   func() (string, error)
+		}{
+			{"test", func() (string, error) { return runBuffered(".", "go", "test", "./...") }},
+			{"grammar", func() (string, error) {
+				if out, err := runBuffered(app.Paths.GrammarDir, "tree-sitter", "generate"); err != nil {
+					return out, err
+				}
+				return runBuffered(app.Paths.GrammarDir, "tree-sitter", "test")
+			}},
+		})
+	}
+
+	if err := os.MkdirAll(app.OutDir, 0o755); err != nil {
+		fmt.Fprintf(os.Stderr, "mkdir %s: %v\n", app.OutDir, err)
+		os.Exit(1)
+	}
+	buildArgs := []string{"build"}
+	if app.Ldflags != "" {
+		buildArgs = append(buildArgs, "-ldflags", app.Ldflags)
+	}
+	buildArgs = append(buildArgs, "-o", app.Bin, ".")
+	mustRun(".", "go", buildArgs...)
+	fmt.Printf("Built %s\n", app.Bin)
 }
 
-target changelog {
-    desc = "Spawn an AI agent to update CHANGELOG.md (Keep a Changelog 1.1.0)"
-    // Resolve agent CLI binary (defaults to Antigravity `agy`)
+func taskTest(_ []string) {
+	mustRun(".", "go", "test", "./...")
+}
 
-    local_agy = filepath.Join(os.UserHomeDir(), ".local", "bin", "agy")
-    resolved_agent = agent_bin
-    if resolved_agent == "" {
-        if try_sh("command -v agy >/dev/null 2>&1") == 0 {
-            resolved_agent = capture("command -v agy")
-        } else if exists(local_agy) {
-            resolved_agent = local_agy
-        } else {
-            fail("agent CLI 'agy' not found; install agy or pass -D agent_bin=<cli>")
-        }
-    }
+func taskGrammar(_ []string) {
+	mustRun(app.Paths.GrammarDir, "tree-sitter", "generate")
+	mustRun(app.Paths.GrammarDir, "tree-sitter", "test")
+}
 
-    today = capture("date +%Y-%m-%d")
-    raw_remote = if try_sh("git remote get-url origin >/dev/null 2>&1") == 0 then capture("git remote get-url origin") else ""
-    trimmed_remote = strings.TrimSuffix(strings.TrimSpace(raw_remote), ".git")
-    repo_url = if strings.HasPrefix(trimmed_remote, "git@github.com:") then "https://github.com/\(strings.TrimPrefix(trimmed_remote, "git@github.com:"))" else trimmed_remote
+func taskZed(_ []string) {
+	mustRun(app.Paths.ZedDir, "cargo", "check")
+}
 
-    has_tag = try_sh("git describe --tags --abbrev=0 >/dev/null 2>&1") == 0
-    latest_tag = if has_tag then capture("git describe --tags --abbrev=0") else "(none)"
-    commits = if has_tag then capture("git log \(latest_tag)..HEAD --pretty=format:'- %h (%cs) %s'") else capture("git log -n 50 --pretty=format:'- %h (%cs) %s'")
-    worktree_status = capture("git status --short")
+func taskCheck(_ []string) {
+	runParallel([]struct {
+		name string
+		fn   func() (string, error)
+	}{
+		{"test", func() (string, error) { return runBuffered(".", "go", "test", "./...") }},
+		{"grammar", func() (string, error) {
+			if out, err := runBuffered(app.Paths.GrammarDir, "tree-sitter", "generate"); err != nil {
+				return out, err
+			}
+			return runBuffered(app.Paths.GrammarDir, "tree-sitter", "test")
+		}},
+		{"zed", func() (string, error) { return runBuffered(app.Paths.ZedDir, "cargo", "check") }},
+	})
+	fmt.Println("All checks passed.")
+}
 
-    ver = strings.TrimPrefix(strings.TrimSpace(changelog_version), "v")
-    release_rule = if ver != "" then "Cut release '## [\(ver)] - \(today)' right below an empty '## [Unreleased]' section, moving unreleased entries into '[\(ver)]' and updating bottom comparison links." else "Place all unreleased commits and working-tree changes under '## [Unreleased]', preserving all existing released version sections verbatim."
+func taskInstall(_ []string) {
+	installDir := os.Getenv("GOBIN")
+	if installDir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "resolve home dir: %v\n", err)
+			os.Exit(1)
+		}
+		installDir = filepath.Join(home, ".local", "bin")
+	}
+	if err := os.MkdirAll(installDir, 0o755); err != nil {
+		fmt.Fprintf(os.Stderr, "mkdir %s: %v\n", installDir, err)
+		os.Exit(1)
+	}
+	out := filepath.Join(installDir, app.Name)
+	buildArgs := []string{"build"}
+	if app.Ldflags != "" {
+		buildArgs = append(buildArgs, "-ldflags", app.Ldflags)
+	}
+	buildArgs = append(buildArgs, "-o", out, ".")
+	mustRun(".", "go", buildArgs...)
+	fmt.Printf("Installed %s\n", out)
+}
 
-    prompt = """
-Create or update CHANGELOG.md in the repository root strictly following Keep a Changelog v1.1.0 (https://keepachangelog.com/en/1.1.0/).
+func taskChangelog(args []string) {
+	ver := app.ChangelogVersion
+	if envVer := os.Getenv("WERK_CHANGELOG_VERSION"); envVer != "" {
+		ver = envVer
+	}
+	resolvedAgent := app.AgentBin
+	if envAgent := os.Getenv("WERK_AGENT_BIN"); envAgent != "" {
+		resolvedAgent = envAgent
+	}
+	for i := 0; i < len(args); i++ {
+		switch {
+		case (args[i] == "--version" || args[i] == "-v") && i+1 < len(args):
+			ver = args[i+1]
+			i++
+		case strings.HasPrefix(args[i], "--version="):
+			ver = strings.TrimPrefix(args[i], "--version=")
+		case args[i] == "--agent" && i+1 < len(args):
+			resolvedAgent = args[i+1]
+			i++
+		case strings.HasPrefix(args[i], "--agent="):
+			resolvedAgent = strings.TrimPrefix(args[i], "--agent=")
+		}
+	}
+
+	if resolvedAgent == "" {
+		if p, err := exec.LookPath("agy"); err == nil {
+			resolvedAgent = p
+		} else if home, hErr := os.UserHomeDir(); hErr == nil {
+			localAgy := filepath.Join(home, ".local", "bin", "agy")
+			if st, sErr := os.Stat(localAgy); sErr == nil && !st.IsDir() {
+				resolvedAgent = localAgy
+			}
+		}
+	}
+	if resolvedAgent == "" {
+		fmt.Fprintln(os.Stderr, "agent CLI 'agy' not found; install agy or set WERK_AGENT_BIN=<cli>")
+		os.Exit(1)
+	}
+
+	today := time.Now().Format("2006-01-02")
+	rawRemote, _ := capture("git", "remote", "get-url", "origin")
+	trimmedRemote := strings.TrimSuffix(strings.TrimSpace(rawRemote), ".git")
+	repoURL := trimmedRemote
+	if strings.HasPrefix(trimmedRemote, "git@github.com:") {
+		repoURL = "https://github.com/" + strings.TrimPrefix(trimmedRemote, "git@github.com:")
+	}
+
+	latestTag, tagErr := capture("git", "describe", "--tags", "--abbrev=0")
+	var commits string
+	if tagErr == nil && latestTag != "" {
+		commits, _ = capture("git", "log", latestTag+"..HEAD", "--pretty=format:- %h (%cs) %s")
+	} else {
+		latestTag = "(none)"
+		commits, _ = capture("git", "log", "-n", "50", "--pretty=format:- %h (%cs) %s")
+	}
+	worktreeStatus, _ := capture("git", "status", "--short")
+
+	ver = strings.TrimPrefix(strings.TrimSpace(ver), "v")
+	releaseRule := "Place all unreleased commits and working-tree changes under '## [Unreleased]', preserving all existing released version sections verbatim."
+	if ver != "" {
+		releaseRule = fmt.Sprintf("Cut release '## [%s] - %s' right below an empty '## [Unreleased]' section, moving unreleased entries into '[%s]' and updating bottom comparison links.", ver, today, ver)
+	}
+
+	prompt := fmt.Sprintf(`Create or update CHANGELOG.md in the repository root strictly following Keep a Changelog v1.1.0 (https://keepachangelog.com/en/1.1.0/).
 
 Requirements:
 1. Header: Start with '# Changelog', state that all notable changes to this project will be documented in this file, and link Keep a Changelog (https://keepachangelog.com/en/1.1.0/) and Semantic Versioning (https://semver.org/spec/v2.0.0.html).
@@ -109,31 +274,72 @@ Requirements:
      ### Removed
      ### Fixed
      ### Security
-4. Release handling: \(release_rule)
-5. Reference links: Maintain Markdown reference-style comparison/tag links at the bottom using repository URL: \(repo_url)
+4. Release handling: %s
+5. Reference links: Maintain Markdown reference-style comparison/tag links at the bottom using repository URL: %s
 6. Read existing CHANGELOG.md if present, inspect key project files for accurate feature descriptions if needed, and write CHANGELOG.md directly.
 
-Repository Git Context (as of \(today)):
-- Remote: \(repo_url)
-- Latest tag: \(latest_tag)
+Repository Git Context (as of %s):
+- Remote: %s
+- Latest tag: %s
 - Commits:
-\(commits)
+%s
 
 - Working tree status:
-\(worktree_status)
-"""
+%s
+`, releaseRule, repoURL, today, repoURL, latestTag, commits, worktreeStatus)
 
-    print("Spawning \(filepath.Base(resolved_agent)) to update CHANGELOG.md...")
-    if filepath.Base(resolved_agent) == "agy" {
-        exec(resolved_agent, ["--mode", "accept-edits", "--print", prompt])
-    } else {
-        exec(resolved_agent, ["-p", prompt])
-    }
+	fmt.Printf("Spawning %s to update CHANGELOG.md...\n", filepath.Base(resolvedAgent))
+	if filepath.Base(resolvedAgent) == "agy" {
+		mustRun(".", resolvedAgent, "--mode", "accept-edits", "--print", prompt)
+	} else {
+		mustRun(".", resolvedAgent, "-p", prompt)
+	}
 }
 
-target clean {
-    desc = "Remove compiled build artifacts"
-    if exists("bin") {
-        rm("bin")
-    }
+func taskClean(_ []string) {
+	_ = os.RemoveAll(app.OutDir)
+	fmt.Printf("Removed %s\n", app.OutDir)
+}
+
+tasks := []taskSpec{
+	{"build", "Run Go & grammar checks and build bin/werk (pass --fast to skip checks)", taskBuild},
+	{"test", "Run Go compiler, Pkl schema, runner, and LSP tests", taskTest},
+	{"grammar", "Generate and test the Tree-sitter grammar", taskGrammar},
+	{"zed", "Typecheck the Zed Rust WASM extension", taskZed},
+	{"check", "Run Go, Tree-sitter, and Zed checks in parallel", taskCheck},
+	{"install", "Install werk into ~/.local/bin (or $GOBIN)", taskInstall},
+	{"changelog", "Spawn an AI agent to update CHANGELOG.md (Keep a Changelog 1.1.0)", taskChangelog},
+	{"clean", "Remove compiled build artifacts", taskClean},
+}
+
+func printTasks() {
+	fmt.Println("Usage: ./Werkfile [task] [args...]  (or: werk [task] [args...])")
+	fmt.Println("\nTasks:")
+	for _, t := range tasks {
+		fmt.Printf("  %-12s %s\n", t.name, t.desc)
+	}
+}
+
+selected := "build"
+var taskArgs []string
+if len(os.Args) > 1 {
+	selected = os.Args[1]
+	taskArgs = os.Args[2:]
+}
+if selected == "help" || selected == "list" || selected == "-h" || selected == "--help" {
+	printTasks()
+	os.Exit(0)
+}
+found := false
+for _, t := range tasks {
+	if t.name == selected {
+		found = true
+		t.fn(taskArgs)
+		break
+	}
+}
+if !found {
+	fmt.Fprintf(os.Stderr, "unknown task %q\n\n", selected)
+	printTasks()
+	os.Exit(1)
 }

@@ -1,8 +1,11 @@
 package diag
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
-// Pos represents a source position with 0-indexed Line and UTF-16 Col (LSP compatible).
+// Pos represents a source position with 0-indexed Line and Col (LSP compatible).
 type Pos struct {
 	Offset int
 	Line   int
@@ -39,4 +42,27 @@ func (d Diagnostic) String() string {
 		file = "<input>"
 	}
 	return fmt.Sprintf("%s:%d:%d: %s: %s", file, d.Span.Start.Line+1, d.Span.Start.Col+1, sev, d.Message)
+}
+
+func (d Diagnostic) Error() string {
+	return d.String()
+}
+
+type Diagnostics []Diagnostic
+
+func (ds Diagnostics) Error() string {
+	parts := make([]string, len(ds))
+	for i, d := range ds {
+		parts[i] = d.String()
+	}
+	return strings.Join(parts, "\n")
+}
+
+func (ds Diagnostics) HasErrors() bool {
+	for _, d := range ds {
+		if d.Severity == SeverityError || d.Severity == 0 {
+			return true
+		}
+	}
+	return false
 }
