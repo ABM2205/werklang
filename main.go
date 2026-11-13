@@ -65,6 +65,15 @@ func runCLI(args []string, allowExecReplace bool) int {
 		return execDirectScript(args[0], args[1:], allowExecReplace)
 	}
 
+	// If a Werkfile exists in the current directory, forward task arguments to it (`werk check`, `werk install`, etc.)
+	if !strings.HasPrefix(args[0], "-") && !strings.Contains(args[0], "/") && !strings.HasSuffix(args[0], ".werk") {
+		for _, def := range []string{"Werkfile", "werkfile"} {
+			if st, err := os.Stat(def); err == nil && !st.IsDir() {
+				return execDirectScript(def, args, allowExecReplace)
+			}
+		}
+	}
+
 	fmt.Fprintf(os.Stderr, "werk: unknown command or missing script %q (run 'werk --help' for usage)\n", args[0])
 	return 1
 }

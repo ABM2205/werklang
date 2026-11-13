@@ -323,8 +323,13 @@ func (s *Server) updateDocument(uri string, version int, text string, isOpen boo
 		}
 	}
 	if virtGoPath == "" {
+		scriptDir := filepath.Dir(path)
 		stem := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
-		virtGoPath = filepath.Join(filepath.Dir(path), stem+"_werk_lsp.go")
+		if goModRoot != "" && runner.DirHasGoFuncMain(scriptDir) {
+			virtGoPath = filepath.Join(goModRoot, ".werk_lsp_"+stem, "main.go")
+		} else {
+			virtGoPath = filepath.Join(scriptDir, stem+"_werk_lsp.go")
+		}
 	}
 
 	// 3. Lower Go script (with TolerateErrors so partial edits still produce a virtual Go buffer)

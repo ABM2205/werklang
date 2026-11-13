@@ -271,7 +271,7 @@ func compilePreparedToBinary(prep *preparedScript, outBin string, extraBuildArgs
 
 	// If sibling `.go` files in scriptDir already define `func main()` (e.g. repo root `main.go` next to `Werkfile`),
 	// compile inside an isolated virtual subpackage under `goModRoot`!
-	if dirHasGoFuncMain(scriptDir) {
+	if DirHasGoFuncMain(scriptDir) {
 		virtPkgName := ".werk_exec_" + shortHash(prep.absScript)[:12]
 		virtualGoPath = filepath.Join(prep.goModRoot, virtPkgName, "main.go")
 		pkgTarget = "./" + virtPkgName
@@ -424,6 +424,9 @@ func Build(opts BuildOptions) error {
 	if err != nil {
 		return err
 	}
+	if opts.OutputPath == "" && absOut == prep.absScript {
+		absOut = prep.absScript + ".bin"
+	}
 
 	return compilePreparedToBinary(prep, absOut, opts.GoBuildArgs, opts.Stderr)
 }
@@ -565,7 +568,8 @@ func collectWerkFiles(target string) ([]string, error) {
 	return out, nil
 }
 
-func dirHasGoFuncMain(dir string) bool {
+// DirHasGoFuncMain reports whether any non-test `.go` file in dir already declares `func main()`.
+func DirHasGoFuncMain(dir string) bool {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return false
