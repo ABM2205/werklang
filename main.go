@@ -1,146 +1,96 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
-	"github.com/ABM2205/werklang/internal/diag"
-	"github.com/ABM2205/werklang/internal/format"
+	"github.com/ABM2205/werklang/internal/golower"
 	"github.com/ABM2205/werklang/internal/lsp"
+	"github.com/ABM2205/werklang/internal/pklschema"
 	"github.com/ABM2205/werklang/internal/runner"
 )
 
-const version = "0.1.0"
+const version = "0.2.0"
 
 func main() {
-	os.Exit(runCLI(os.Args[1:]))
+	os.Exit(runCLI(os.Args[1:], true))
 }
 
-func runCLI(args []string) int {
-	if len(args) > 0 {
-		switch args[0] {
-		case "lsp":
-			srv := lsp.NewServer(os.Stdin, os.Stdout)
-			if err := srv.Run(); err != nil {
-				fmt.Fprintf(os.Stderr, "werk lsp error: %v\n", err)
-				return 1
+func runCLI(args []string, allowExecReplace bool) int {
+	if len(args) == 0 {
+		for _, def := range []string{"Werkfile", "werkfile"} {
+			if st, err := os.Stat(def); err == nil && !st.IsDir() {
+				return execDirectScript(def, nil, allowExecReplace)
 			}
-			return 0
-
-		case "fmt":
-			return cmdFmt(args[1:])
-
-		case "check":
-			return cmdCheck(args[1:])
-
-		case "emit-go":
-			return cmdEmitGo(args[1:])
-
-		case "version", "--version", "-V":
-			fmt.Printf("werk %s\n", version)
-			return 0
-
-		case "help", "--help", "-h":
-			printUsage()
-			return 0
-
-		case "run":
-			if len(args) < 2 {
-				fmt.Fprintln(os.Stderr, "usage: werk run <file.werk> [targets...]")
-				return 1
-			}
-			return cmdExec(append([]string{"-f", args[1]}, args[2:]...))
 		}
+		printUsage()
+		return 0
 	}
 
-	return cmdExec(args)
+	switch args[0] {
+	case "init":
+		return cmdInit(args[1:])
+	case "run":
+		return cmdRun(args[1:], allowExecReplace)
+	case "build":
+		return cmdBuild(args[1:])
+	case "test":
+		return cmdTest(args[1:])
+	case "generate":
+		return cmdGenerate(args[1:])
+	case "fmt":
+		return cmdFmt(args[1:])
+	case "pkl-reader":
+		return cmdPklReader(args[1:])
+	case "lsp":
+		srv := lsp.NewServer(os.Stdin, os.Stdout)
+		if err := srv.Run(); err != nil {
+			fmt.Fprintf(os.Stderr, "werk lsp: %v\n", err)
+			return 1
+		}
+		return 0
+	case "version", "--version", "-V":
+		fmt.Printf("werk %s\n", version)
+		return 0
+	case "help", "--help", "-h":
+		printUsage()
+		return 0
+	}
+
+	// Direct script execution (`werk ./script.werk [args...]` or `#!/usr/bin/env werk`)
+	if isDirectScriptCandidate(args[0]) {
+		return execDirectScript(args[0], args[1:], allowExecReplace)
+	}
+
+	fmt.Fprintf(os.Stderr, "werk: unknown command or missing script %q (run 'werk --help' for usage)\n", args[0])
+	return 1
 }
 
-func cmdExec(args []string) int {
-	opts := runner.RunOptions{
-		Overrides: make(map[string]string),
-		Stdout:    os.Stdout,
-		Stderr:    os.Stderr,
-		Stdin:     os.Stdin,
+func isDirectScriptCandidate(arg string) bool {
+	if strings.HasPrefix(arg, "-") {
+		return false
 	}
-
-	var positional []string
-	for i := 0; i < len(args); i++ {
-		a := args[i]
-		switch {
-		case a == "-l" || a == "--list":
-			opts.List = true
-		case a == "-v" || a == "--verbose":
-			opts.Verbose = true
-		case a == "--debug":
-			opts.Debug = true
-		case a == "--force":
-			opts.Force = true
-		case a == "-f" || a == "--file":
-			if i+1 >= len(args) {
-				fmt.Fprintln(os.Stderr, "error: -f requires a file path")
-				return 1
-			}
-			i++
-			opts.File = args[i]
-		case strings.HasPrefix(a, "-f="):
-			opts.File = strings.TrimPrefix(a, "-f=")
-		case a == "-C" || a == "--dir":
-			if i+1 >= len(args) {
-				fmt.Fprintln(os.Stderr, "error: -C requires a directory path")
-				return 1
-			}
-			i++
-			opts.WorkDir = args[i]
-		case a == "--compile":
-			if i+1 >= len(args) {
-				fmt.Fprintln(os.Stderr, "error: --compile requires an output binary path")
-				return 1
-			}
-			i++
-			opts.CompileOut = args[i]
-		case strings.HasPrefix(a, "--compile="):
-			opts.CompileOut = strings.TrimPrefix(a, "--compile=")
-		case a == "-D":
-			if i+1 >= len(args) {
-				fmt.Fprintln(os.Stderr, "error: -D requires key=value")
-				return 1
-			}
-			i++
-			if !parseOverride(opts.Overrides, args[i]) {
-				return 1
-			}
-		case strings.HasPrefix(a, "-D"):
-			if !parseOverride(opts.Overrides, strings.TrimPrefix(a, "-D")) {
-				return 1
-			}
-		case strings.HasPrefix(a, "-"):
-			fmt.Fprintf(os.Stderr, "unknown flag: %s (run 'werk --help' for usage)\n", a)
-			return 1
-		default:
-			positional = append(positional, a)
-		}
+	if strings.HasSuffix(arg, ".werk") {
+		return true
 	}
-
-	// Support direct `werk script.werk` or `#!/usr/bin/env werk` execution
-	if opts.File == "" && len(positional) > 0 && looksLikeScriptFile(positional[0]) {
-		opts.File = positional[0]
-		positional = positional[1:]
+	if st, err := os.Stat(arg); err == nil && !st.IsDir() {
+		return true
 	}
+	return false
+}
 
-	if opts.File == "" {
-		found, err := findDefaultWerkfile(opts.WorkDir)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
-			return 1
-		}
-		opts.File = found
-	}
-
-	opts.Targets = positional
-	code, err := runner.Run(opts)
+func execDirectScript(scriptPath string, scriptArgs []string, allowExecReplace bool) int {
+	code, err := runner.Run(runner.RunOptions{
+		ScriptPath:  scriptPath,
+		ScriptArgs:  scriptArgs,
+		ExecReplace: allowExecReplace,
+		Stdin:       os.Stdin,
+		Stdout:      os.Stdout,
+		Stderr:      os.Stderr,
+	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		if code == 0 {
@@ -150,37 +100,261 @@ func cmdExec(args []string) int {
 	return code
 }
 
-func looksLikeScriptFile(arg string) bool {
-	if strings.HasSuffix(arg, ".werk") || strings.ContainsRune(arg, filepath.Separator) || strings.HasPrefix(arg, ".") {
-		if st, err := os.Stat(arg); err == nil && !st.IsDir() {
-			return true
-		}
+func cmdInit(args []string) int {
+	dir := "."
+	if len(args) > 0 {
+		dir = args[0]
 	}
-	return false
+	path, changed, err := pklschema.InitProject(dir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "werk init: %v\n", err)
+		return 1
+	}
+	if changed {
+		fmt.Printf("Configured Pkl external module reader 'werk' in %s\n", path)
+	} else {
+		fmt.Printf("PklProject already configured in %s\n", path)
+	}
+	return 0
 }
 
-func findDefaultWerkfile(workDir string) (string, error) {
-	dir := workDir
-	if dir == "" {
-		dir = "."
-	}
-	for _, name := range []string{"Werkfile", "werkfile", "build.werk"} {
-		cand := filepath.Join(dir, name)
-		if st, err := os.Stat(cand); err == nil && !st.IsDir() {
-			return cand, nil
+func cmdRun(args []string, allowExecReplace bool) int {
+	var cfgs []string
+	rebuild := false
+	var target string
+	var scriptArgs []string
+
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if target != "" {
+			if a == "--" && len(scriptArgs) == 0 {
+				scriptArgs = append(scriptArgs, args[i+1:]...)
+				break
+			}
+			scriptArgs = append(scriptArgs, a)
+			continue
+		}
+		switch {
+		case a == "-c" || a == "--config":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "werk run: -c requires a .pkl file path")
+				return 1
+			}
+			i++
+			cfgs = append(cfgs, args[i])
+		case strings.HasPrefix(a, "-c="):
+			cfgs = append(cfgs, strings.TrimPrefix(a, "-c="))
+		case strings.HasPrefix(a, "--config="):
+			cfgs = append(cfgs, strings.TrimPrefix(a, "--config="))
+		case a == "--rebuild":
+			rebuild = true
+		case a == "-h" || a == "--help":
+			fmt.Fprintln(os.Stdout, "usage: werk run [-c file.pkl] [--rebuild] <file.werk|dir> [-- args...]")
+			return 0
+		case strings.HasPrefix(a, "-"):
+			fmt.Fprintf(os.Stderr, "werk run: unknown flag %s\n", a)
+			return 1
+		default:
+			target = a
 		}
 	}
-	return "", fmt.Errorf("no Werkfile found in %s (specify a file with '-f <file.werk>' or 'werk <script.werk>')", dir)
+
+	if target == "" {
+		fmt.Fprintln(os.Stderr, "usage: werk run [-c file.pkl] [--rebuild] <file.werk|dir> [-- args...]")
+		return 1
+	}
+
+	st, err := os.Stat(target)
+	if err == nil && st.IsDir() {
+		entries, _ := os.ReadDir(target)
+		found := ""
+		for _, e := range entries {
+			if !e.IsDir() && strings.HasSuffix(e.Name(), ".werk") {
+				found = filepath.Join(target, e.Name())
+				break
+			}
+		}
+		if found == "" {
+			for _, def := range []string{"Werkfile", "werkfile"} {
+				cand := filepath.Join(target, def)
+				if info, sErr := os.Stat(cand); sErr == nil && !info.IsDir() {
+					found = cand
+					break
+				}
+			}
+		}
+		if found != "" {
+			target = found
+		}
+	}
+
+	code, err := runner.Run(runner.RunOptions{
+		ScriptPath:  target,
+		ConfigFiles: cfgs,
+		ScriptArgs:  scriptArgs,
+		Rebuild:     rebuild,
+		ExecReplace: allowExecReplace,
+		Stdin:       os.Stdin,
+		Stdout:      os.Stdout,
+		Stderr:      os.Stderr,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		if code == 0 {
+			return 1
+		}
+	}
+	return code
 }
 
-func parseOverride(dst map[string]string, kv string) bool {
-	idx := strings.IndexByte(kv, '=')
-	if idx <= 0 {
-		fmt.Fprintf(os.Stderr, "invalid -D override %q (expected key=value)\n", kv)
-		return false
+func cmdBuild(args []string) int {
+	var cfgs []string
+	var outPath string
+	var goArgs []string
+	var positional []string
+
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "-c" || a == "--config":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "werk build: -c requires a .pkl file path")
+				return 1
+			}
+			i++
+			cfgs = append(cfgs, args[i])
+		case strings.HasPrefix(a, "-c="):
+			cfgs = append(cfgs, strings.TrimPrefix(a, "-c="))
+		case strings.HasPrefix(a, "--config="):
+			cfgs = append(cfgs, strings.TrimPrefix(a, "--config="))
+		case a == "-o":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "werk build: -o requires an output path")
+				return 1
+			}
+			i++
+			outPath = args[i]
+		case strings.HasPrefix(a, "-o="):
+			outPath = strings.TrimPrefix(a, "-o=")
+		case a == "-ldflags" || a == "-tags" || a == "-gcflags" || a == "-asmflags" || a == "-mod":
+			if i+1 >= len(args) {
+				fmt.Fprintf(os.Stderr, "werk build: %s requires a value\n", a)
+				return 1
+			}
+			goArgs = append(goArgs, a, args[i+1])
+			i++
+		case a == "-h" || a == "--help":
+			fmt.Fprintln(os.Stdout, "usage: werk build [-c file.pkl] [-o output] [go build flags...] [file.werk|dir]")
+			return 0
+		case strings.HasPrefix(a, "-"):
+			goArgs = append(goArgs, a)
+		default:
+			positional = append(positional, a)
+		}
 	}
-	dst[kv[:idx]] = kv[idx+1:]
-	return true
+
+	target := "."
+	if len(positional) > 0 {
+		target = positional[len(positional)-1]
+	}
+
+	if err := runner.Build(runner.BuildOptions{
+		Target:      target,
+		OutputPath:  outPath,
+		ConfigFiles: cfgs,
+		GoBuildArgs: goArgs,
+		Stdout:      os.Stdout,
+		Stderr:      os.Stderr,
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		return 1
+	}
+	return 0
+}
+
+func cmdTest(args []string) int {
+	var cfgs []string
+	var goArgs []string
+	var targets []string
+
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "-c" || a == "--config":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "werk test: -c requires a .pkl file path")
+				return 1
+			}
+			i++
+			cfgs = append(cfgs, args[i])
+		case strings.HasPrefix(a, "-c="):
+			cfgs = append(cfgs, strings.TrimPrefix(a, "-c="))
+		case strings.HasPrefix(a, "--config="):
+			cfgs = append(cfgs, strings.TrimPrefix(a, "--config="))
+		case a == "-run" || a == "-bench" || a == "-timeout" || a == "-count" || a == "-tags":
+			if i+1 < len(args) {
+				goArgs = append(goArgs, a, args[i+1])
+				i++
+			} else {
+				goArgs = append(goArgs, a)
+			}
+		case strings.HasPrefix(a, "-"):
+			goArgs = append(goArgs, a)
+		default:
+			targets = append(targets, a)
+		}
+	}
+
+	code, err := runner.Test(runner.TestOptions{
+		Targets:     targets,
+		ConfigFiles: cfgs,
+		GoTestArgs:  goArgs,
+		Stdout:      os.Stdout,
+		Stderr:      os.Stderr,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		if code == 0 {
+			return 1
+		}
+	}
+	return code
+}
+
+func cmdGenerate(args []string) int {
+	var cfgs []string
+	var targets []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "-c" || a == "--config":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "werk generate: -c requires a .pkl file path")
+				return 1
+			}
+			i++
+			cfgs = append(cfgs, args[i])
+		case strings.HasPrefix(a, "-c="):
+			cfgs = append(cfgs, strings.TrimPrefix(a, "-c="))
+		case strings.HasPrefix(a, "--config="):
+			cfgs = append(cfgs, strings.TrimPrefix(a, "--config="))
+		default:
+			targets = append(targets, a)
+		}
+	}
+
+	written, err := runner.Generate(runner.GenerateOptions{
+		Targets:     targets,
+		ConfigFiles: cfgs,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "werk generate: %v\n", err)
+		return 1
+	}
+	for _, w := range written {
+		fmt.Println(w)
+	}
+	return 0
 }
 
 func cmdFmt(args []string) int {
@@ -194,112 +368,64 @@ func cmdFmt(args []string) int {
 		}
 	}
 	if len(files) == 0 {
-		wf, err := findDefaultWerkfile(".")
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "usage: werk fmt [--check] <files...>")
-			return 1
-		}
-		files = []string{wf}
+		fmt.Fprintln(os.Stderr, "usage: werk fmt [--check] <files...>")
+		return 1
 	}
-
-	unformatted := 0
+	code := 0
 	for _, f := range files {
 		raw, err := os.ReadFile(f)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "error reading %s: %v\n", f, err)
+			fmt.Fprintf(os.Stderr, "werk fmt: %v\n", err)
 			return 1
 		}
-		formatted, err := format.Source(f, string(raw))
+		fmted, err := golower.FormatWerk(f, raw)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "%v\n", err)
 			return 1
 		}
-		if formatted != string(raw) {
-			if checkOnly {
-				fmt.Println(f)
-				unformatted++
-			} else {
-				if err := os.WriteFile(f, []byte(formatted), 0o644); err != nil {
-					fmt.Fprintf(os.Stderr, "error writing %s: %v\n", f, err)
-					return 1
-				}
+		if checkOnly {
+			if !bytes.Equal(raw, fmted) {
+				fmt.Fprintf(os.Stderr, "%s: not formatted\n", f)
+				code = 1
+			}
+		} else if !bytes.Equal(raw, fmted) {
+			if err := os.WriteFile(f, fmted, 0o644); err != nil {
+				fmt.Fprintf(os.Stderr, "werk fmt: %v\n", err)
+				return 1
 			}
 		}
 	}
-	if checkOnly && unformatted > 0 {
-		return 1
-	}
-	return 0
+	return code
 }
 
-func cmdCheck(args []string) int {
-	file := ""
-	if len(args) > 0 {
-		file = args[0]
-	} else {
-		var err error
-		file, err = findDefaultWerkfile(".")
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
-			return 1
+func cmdPklReader(args []string) int {
+	rootDir := ""
+	for i := 0; i < len(args); i++ {
+		if (args[i] == "--root" || args[i] == "-C") && i+1 < len(args) {
+			rootDir = args[i+1]
+			i++
 		}
 	}
-	wd, _ := os.Getwd()
-	cp := runner.Check(file, wd, nil)
-	hasErr := false
-	for _, d := range cp.Diagnostics {
-		fmt.Fprintln(os.Stderr, d.String())
-		if d.Severity == diag.SeverityError {
-			hasErr = true
-		}
-	}
-	if hasErr {
+	if err := pklschema.RunExternalReader(rootDir); err != nil {
+		fmt.Fprintf(os.Stderr, "werk pkl-reader: %v\n", err)
 		return 1
 	}
-	return 0
-}
-
-func cmdEmitGo(args []string) int {
-	file := ""
-	if len(args) > 0 {
-		file = args[0]
-	} else {
-		var err error
-		file, err = findDefaultWerkfile(".")
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
-			return 1
-		}
-	}
-	wd, _ := os.Getwd()
-	goCode, _, err := runner.Transpile(file, wd)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "%v\n", err)
-		return 1
-	}
-	fmt.Print(goCode)
 	return 0
 }
 
 func printUsage() {
-	fmt.Print(`werk — Go + Apple Pkl scripting & Mage-powered build language
+	fmt.Print(`werk — Go + Pkl hybrid scripting & configuration tool
 
 Usage:
-  werk [flags] [targets...]         Run target(s) in ./Werkfile
-  werk <script.werk>                Run a standalone .werk script
-  werk fmt [--check] [files...]     Format .werk files canonically
-  werk check [file.werk]            Typecheck and validate imports/DAG
-  werk emit-go [file.werk]          Print transpiled Go Magefile source
-  werk lsp                          Start Language Server Protocol (stdio)
-
-Flags:
-  -l, --list             List available targets (including mage:... imports)
-  -f, --file <path>      Specify Werkfile or .werk script path
-  -C, --dir <dir>        Change working directory before running
-  -D <key=value>         Override top-level property (int, float, string, bool)
-  -v, --verbose          Verbose Mage execution logs
-  --force                Force recompilation of cached Mage binary
-  --compile <out>        Compile .werk file into a standalone static binary
-  -V, --version          Show werk version
+  werk <script.werk> [args...]                 Run a .werk script directly (supports #!/usr/bin/env werk)
+  werk run [-c file.pkl] <script.werk> [args]  Preprocess, cache, and run a .werk script
+  werk build [-c file.pkl] [-o bin] [target]   Compile a .werk script into a native Go binary
+  werk test [-c file.pkl] [pkgs...]            Run go test
+  werk generate [-c file.pkl] [targets...]     Materialize lowered *_werk.go files on disk
+  werk fmt [--check] <files...>                Format .werk scripts
+  werk init [dir]                              Configure PklProject with the werk: external module reader
+  werk pkl-reader                              Run Pkl External Module Reader over stdio
+  werk lsp                                     Start hybrid Go + Pkl Language Server
+  werk version                                 Print werk version
 `)
 }

@@ -1,134 +1,148 @@
-import "go:os"
-import "go:path/filepath"
-import "go:strings"
-
-release bool = false
-changelog_version string = ""
-agent_bin string = env("WERK_AGENT_BIN", "")
+#!/usr/bin/env werk
+import (
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"sync"
+)
 
 config app {
-    name string = "werk"
-    bin string = filepath.Join("bin", name)
-    ldflags string = if release then "-s -w" else ""
+	/// Output binary name
+	name: String = "werk"
+
+	/// Output directory for local builds
+	outDir: String = "bin"
+
+	/// Strip symbols for release builds
+	release: Boolean = false
+
+	paths {
+		grammarDir = "tree-sitter-werklang"
+		zedDir = "extensions/zed"
+	}
 }
 
-target build {
-    desc = "Build the werk CLI binary into bin/werk"
-    parallel_deps = ["test", "grammar"]
-    inputs = glob("internal/**/*.go") + ["main.go", "go.mod"]
-    outputs = [app.bin]
+binPath := filepath.Join(app.OutDir, app.Name)
 
-    if !exists("bin") {
-        mkdir("bin")
-    }
-    if app.ldflags != "" {
-        exec("go", ["build", "-ldflags", app.ldflags, "-o", app.bin, "."])
-    } else {
-        exec("go", ["build", "-o", app.bin, "."])
-    }
-    print("Built \(app.bin)")
+func runCmd(dir string, name string, args ...string) error {
+	cmd := exec.Command(name, args...)
+	cmd.Dir = dir
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
 }
 
-target test {
-    desc = "Run Go compiler, interop, and LSP tests"
-    sh("go test ./...")
+func mustRun(dir string, name string, args ...string) {
+	if err := runCmd(dir, name, args...); err != nil {
+		fmt.Fprintf(os.Stderr, "%s %v failed: %v\n", name, args, err)
+		os.Exit(1)
+	}
 }
 
-target grammar {
-    desc = "Generate and test the Tree-sitter grammar"
-    sh("cd tree-sitter-werklang && tree-sitter generate && tree-sitter test")
+func taskBuild() {
+	if err := os.MkdirAll(app.OutDir, 0o755); err != nil {
+		panic(err)
+	}
+	args := []string{"build"}
+	if app.Release {
+		args = append(args, "-ldflags", "-s -w")
+	}
+	args = append(args, "-o", binPath, ".")
+	mustRun(".", "go", args...)
+	fmt.Printf("Built %s\n", binPath)
 }
 
-target zed {
-    desc = "Typecheck the Zed Rust WASM extension"
-    sh("cd extensions/zed && cargo check")
+func taskTest() {
+	mustRun(".", "go", "test", "./...")
 }
 
-target check {
-    desc = "Run Go, Tree-sitter, and Zed checks in parallel"
-    parallel_deps = ["test", "grammar", "zed"]
+func taskGrammar() {
+	mustRun(app.Paths.GrammarDir, "tree-sitter", "generate")
+	mustRun(app.Paths.GrammarDir, "tree-sitter", "test")
 }
 
-target install {
-    desc = "Install werk into ~/.local/bin (or GOBIN)"
-    gobin = env("GOBIN", "")
-    install_dir = if gobin != "" then gobin else filepath.Join(os.UserHomeDir(), ".local", "bin")
-    mkdir(install_dir)
-    out = filepath.Join(install_dir, app.name)
-    exec("go", ["build", "-o", out, "."])
-    print("Installed \(out)")
+func taskZed() {
+	mustRun(app.Paths.ZedDir, "cargo", "check")
 }
 
-target changelog {
-    desc = "Spawn an AI agent to update CHANGELOG.md (Keep a Changelog 1.1.0)"
-    // Resolve agent CLI binary (defaults to Antigravity `agy`)
+func taskCheck() {
+	tasks := []struct {
+		name string
+		fn   func() error
+	}{
+		{"test", func() error { return runCmd(".", "go", "test", "./...") }},
+		{"grammar", func() error {
+			if err := runCmd(app.Paths.GrammarDir, "tree-sitter", "generate"); err != nil {
+				return err
+			}
+			return runCmd(app.Paths.GrammarDir, "tree-sitter", "test")
+		}},
+		{"zed", func() error { return runCmd(app.Paths.ZedDir, "cargo", "check") }},
+	}
 
-    local_agy = filepath.Join(os.UserHomeDir(), ".local", "bin", "agy")
-    resolved_agent = agent_bin
-    if resolved_agent == "" {
-        if try_sh("command -v agy >/dev/null 2>&1") == 0 {
-            resolved_agent = capture("command -v agy")
-        } else if exists(local_agy) {
-            resolved_agent = local_agy
-        } else {
-            fail("agent CLI 'agy' not found; install agy or pass -D agent_bin=<cli>")
-        }
-    }
-
-    today = capture("date +%Y-%m-%d")
-    raw_remote = if try_sh("git remote get-url origin >/dev/null 2>&1") == 0 then capture("git remote get-url origin") else ""
-    trimmed_remote = strings.TrimSuffix(strings.TrimSpace(raw_remote), ".git")
-    repo_url = if strings.HasPrefix(trimmed_remote, "git@github.com:") then "https://github.com/\(strings.TrimPrefix(trimmed_remote, "git@github.com:"))" else trimmed_remote
-
-    has_tag = try_sh("git describe --tags --abbrev=0 >/dev/null 2>&1") == 0
-    latest_tag = if has_tag then capture("git describe --tags --abbrev=0") else "(none)"
-    commits = if has_tag then capture("git log \(latest_tag)..HEAD --pretty=format:'- %h (%cs) %s'") else capture("git log -n 50 --pretty=format:'- %h (%cs) %s'")
-    worktree_status = capture("git status --short")
-
-    ver = strings.TrimPrefix(strings.TrimSpace(changelog_version), "v")
-    release_rule = if ver != "" then "Cut release '## [\(ver)] - \(today)' right below an empty '## [Unreleased]' section, moving unreleased entries into '[\(ver)]' and updating bottom comparison links." else "Place all unreleased commits and working-tree changes under '## [Unreleased]', preserving all existing released version sections verbatim."
-
-    prompt = """
-Create or update CHANGELOG.md in the repository root strictly following Keep a Changelog v1.1.0 (https://keepachangelog.com/en/1.1.0/).
-
-Requirements:
-1. Header: Start with '# Changelog', state that all notable changes to this project will be documented in this file, and link Keep a Changelog (https://keepachangelog.com/en/1.1.0/) and Semantic Versioning (https://semver.org/spec/v2.0.0.html).
-2. Human-focused entries: Write clear, concise, user-facing bullet points grouping related work—do not dump raw git commit messages.
-3. Structure & Sections:
-   - Keep '## [Unreleased]' at the top.
-   - Order released versions newest-first using ISO 8601 dates ('## [X.Y.Z] - YYYY-MM-DD').
-   - Group entries strictly under standard Keep a Changelog subsections (include only non-empty ones, in this order):
-     ### Added
-     ### Changed
-     ### Deprecated
-     ### Removed
-     ### Fixed
-     ### Security
-4. Release handling: \(release_rule)
-5. Reference links: Maintain Markdown reference-style comparison/tag links at the bottom using repository URL: \(repo_url)
-6. Read existing CHANGELOG.md if present, inspect key project files for accurate feature descriptions if needed, and write CHANGELOG.md directly.
-
-Repository Git Context (as of \(today)):
-- Remote: \(repo_url)
-- Latest tag: \(latest_tag)
-- Commits:
-\(commits)
-
-- Working tree status:
-\(worktree_status)
-"""
-
-    print("Spawning \(filepath.Base(resolved_agent)) to update CHANGELOG.md...")
-    if filepath.Base(resolved_agent) == "agy" {
-        exec(resolved_agent, ["--mode", "accept-edits", "--print", prompt])
-    } else {
-        exec(resolved_agent, ["-p", prompt])
-    }
+	var wg sync.WaitGroup
+	errs := make(chan error, len(tasks))
+	for _, t := range tasks {
+		wg.Add(1)
+		go func(name string, fn func() error) {
+			defer wg.Done()
+			if err := fn(); err != nil {
+				errs <- fmt.Errorf("%s: %w", name, err)
+			}
+		}(t.name, t.fn)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	fmt.Println("All checks passed.")
 }
 
-target clean {
-    desc = "Remove compiled build artifacts"
-    if exists("bin") {
-        rm("bin")
-    }
+func taskInstall() {
+	installDir := os.Getenv("GOBIN")
+	if installDir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			panic(err)
+		}
+		installDir = filepath.Join(home, ".local", "bin")
+	}
+	if err := os.MkdirAll(installDir, 0o755); err != nil {
+		panic(err)
+	}
+	out := filepath.Join(installDir, app.Name)
+	mustRun(".", "go", "build", "-o", out, ".")
+	fmt.Printf("Installed %s\n", out)
+}
+
+func taskClean() {
+	_ = os.RemoveAll(app.OutDir)
+}
+
+task := "build"
+if len(os.Args) > 1 {
+	task = os.Args[1]
+}
+
+switch task {
+case "build":
+	taskBuild()
+case "test":
+	taskTest()
+case "grammar":
+	taskGrammar()
+case "zed":
+	taskZed()
+case "check":
+	taskCheck()
+case "install":
+	taskInstall()
+case "clean":
+	taskClean()
+default:
+	fmt.Fprintf(os.Stderr, "unknown task %q (available: build, test, grammar, zed, check, install, clean)\n", task)
+	os.Exit(1)
 }

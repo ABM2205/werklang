@@ -1,0 +1,21 @@
+amends "pkl:Project"
+
+evaluatorSettings {
+  allowedModules {
+    "pkl:"
+    "repl:"
+    "file:"
+    "https:"
+    "package:"
+    "projectpackage:"
+    "werk:"
+  }
+  externalModuleReaders {
+    ["werk"] {
+      executable = "werk"
+      arguments {
+        "pkl-reader"
+      }
+    }
+  }
+}

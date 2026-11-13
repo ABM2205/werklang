@@ -1,46 +1,104 @@
-; Variables
-(identifier) @variable
-(for_stmt variable: (identifier) @variable)
+; Werklang v2 highlights (Go host + config block)
 
-; Comments
-(comment) @comment
 (shebang) @comment.doc
 
-; Keywords
-[
-  "amends"
-  "import"
-  "as"
-  "config"
-  "target"
-] @keyword
+(config_keyword) @keyword
 
-[
-  "if"
-  "then"
-  "else"
-  "for"
-  "in"
-] @keyword.control
+(config_declaration
+  name: (identifier)? @variable)
+
+; Function calls
+(call_expression
+  function: (identifier) @function)
+
+(call_expression
+  function: (identifier) @function.builtin
+  (#match? @function.builtin "^(append|cap|close|complex|copy|delete|imag|len|make|new|panic|print|println|real|recover)$"))
+
+(call_expression
+  function: (selector_expression
+    field: (field_identifier) @function.method))
+
+; Function & method definitions
+(function_declaration
+  name: (identifier) @function)
+
+(method_declaration
+  name: (field_identifier) @function.method)
+
+; Identifiers
+(type_identifier) @type
+(field_identifier) @property
+(identifier) @variable
 
 ; Operators
 [
-  "+"
+  "--"
   "-"
-  "*"
-  "/"
-  "%"
-  "=="
+  "-="
+  ":="
+  "!"
   "!="
+  "..."
+  "*"
+  "*="
+  "/"
+  "/="
+  "&"
+  "&&"
+  "&="
+  "%"
+  "%="
+  "^"
+  "^="
+  "+"
+  "++"
+  "+="
+  "<-"
   "<"
+  "<<"
+  "<<="
   "<="
+  "="
+  "=="
   ">"
   ">="
-  "&&"
+  ">>"
+  ">>="
+  "|"
+  "|="
   "||"
-  "!"
-  "="
+  "~"
 ] @operator
+
+; Keywords
+[
+  "break"
+  "case"
+  "chan"
+  "const"
+  "continue"
+  "default"
+  "defer"
+  "else"
+  "fallthrough"
+  "for"
+  "func"
+  "go"
+  "goto"
+  "if"
+  "import"
+  "interface"
+  "map"
+  "package"
+  "range"
+  "return"
+  "select"
+  "struct"
+  "switch"
+  "type"
+  "var"
+] @keyword
 
 ; Punctuation
 [
@@ -48,7 +106,6 @@
   "}"
   "["
   "]"
-  "[]"
   "("
   ")"
 ] @punctuation.bracket
@@ -57,43 +114,29 @@
   ","
   "."
   ";"
+  ":"
 ] @punctuation.delimiter
 
-; Types
-(primitive_type) @type.builtin
-(type_annotation (identifier) @type)
-(qualified_type
-  package: (identifier) @namespace
-  name: (identifier) @type)
+; Literals
+[
+  (interpreted_string_literal)
+  (raw_string_literal)
+  (rune_literal)
+] @string
 
-; Declarations
-(target_decl name: (identifier) @function.definition)
-(config_decl name: (identifier) @type.definition)
-(field_decl name: (identifier) @property)
-(import_decl alias: (identifier) @namespace)
-
-; Member access & struct amending
-(selector_expr field: (identifier) @property)
-(struct_amend_expr type: (identifier) @type)
-(struct_amend_expr
-  type: (selector_expr
-    operand: (identifier) @namespace
-    field: (identifier) @type))
-
-; Calls & built-ins
-(call_expr function: (identifier) @function)
-(call_expr function: (selector_expr field: (identifier) @function.method))
-
-((call_expr
-  function: (identifier) @function.builtin)
-  (#any-of? @function.builtin
-    "sh" "exec" "capture" "try_sh" "rm" "mkdir" "env" "glob" "exists" "print" "fail"))
-
-; Literals & String Interpolation
-(string_literal) @string
-(multiline_string_literal) @string
 (escape_sequence) @string.escape
-(interpolation "\\(" @punctuation.special ")" @punctuation.special) @embedded
-(int_literal) @number
-(float_literal) @number
-(bool_literal) @boolean
+
+[
+  (int_literal)
+  (float_literal)
+  (imaginary_literal)
+] @number
+
+[
+  (true)
+  (false)
+  (nil)
+  (iota)
+] @constant.builtin
+
+(comment) @comment

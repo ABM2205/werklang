@@ -1,9 +1,9 @@
 id = "werklang"
 name = "Werklang"
-version = "0.1.0"
+version = "0.2.0"
 schema_version = 1
 authors = ["ABM2205"]
-description = "Werklang language support for Zed (.werk, Werkfile)"
+description = "Werklang (Go + Pkl hybrid scripts) language support for Zed"
 repository = "https://github.com/ABM2205/werklang"
 
 [grammars.werklang]

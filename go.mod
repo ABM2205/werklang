@@ -4,7 +4,6 @@ go 1.27.3
 
 require (
 	github.com/apple/pkl-go v0.14.0
-	github.com/magefile/mage v1.17.2
 	golang.org/x/tools v0.52.0
 )
 
