@@ -32,5 +32,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `go:` standard library and `pkl:` schema interop inspectors.
 - Initial `werk` CLI (`run`, `build`, `fmt`, `lsp`), Tree-sitter grammar, and Zed editor extension.
 
-[Unreleased]: https://github.com/ABM2205/werklang/compare/36bc85b...werklang-2
+[Unreleased]: https://github.com/ABM2205/werklang/compare/36bc85b...HEAD
 [0.1.0]: https://github.com/ABM2205/werklang/commit/36bc85b

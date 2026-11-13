@@ -8,7 +8,7 @@ repository = "https://github.com/ABM2205/werklang"
 
 [grammars.werklang]
 repository = "https://github.com/ABM2205/werklang"
-rev = "werklang-2"
+rev = "main"
 path = "tree-sitter-werklang"
 
 [language_servers.werklang-lsp]
